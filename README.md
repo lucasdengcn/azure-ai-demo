@@ -2,6 +2,6 @@
 
 ## Document
 
-## Visio
+## Vision
 
 ## OpenAI
