@@ -8,6 +8,7 @@
 
 ```bash
 pip install azure-ai-documentintelligence==1.0.0b2
+pip install python-dotenv
 ```
 
 ### Layout elements

@@ -1,15 +1,19 @@
 # import libraries
 import os
-import json
+import time
 import base64
+import json
+from pydantic import BaseModel
+from typing import List, Optional
+
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeResult
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 
-# set `<your-endpoint>` and `<your-key>` variables with the values from the Azure portal
-endpoint = ""
-key = ""
+#
+from dotenv import load_dotenv
+load_dotenv()
 
 # helper functions
 
@@ -29,12 +33,41 @@ def _in_span(word, spans):
             return True
     return False
 
+class PDFTable(BaseModel):
+    """
+    Row as {"column2": "", "column2": ""}
+    """
+    rows: List[dict] = []
+class PDFPageSection(BaseModel):
+    path: str = None
+    heading: str = None
+    paragraphs: List[str] = []
+    subSections: Optional[List['PDFPageSection']] = []
+    table: Optional[List[PDFTable]] = []
+
+class PDFPage(BaseModel):
+    sections: List[PDFPageSection] = []
+
+
+def parse_paragraph(section, paragraph) -> None:
+    print(f"paragraph role: {paragraph.role}")
+    if paragraph.role == "sectionHeading":
+        section.heading = paragraph.content
+    else:
+        section.paragraphs.append(paragraph.content)
 
 def analyze_layout():
     # sample document
     with open("./sample.pdf", "rb") as f:
         base64_encoded_pdf = base64.b64encode(f.read()).decode("utf-8")
 
+    #
+    endpoint = os.getenv("ENDPOINT")
+    key = os.getenv("KEY")
+
+    print(f"{endpoint}, {key}")
+    #
+    start_time = time.time()
     document_intelligence_client = DocumentIntelligenceClient(
         endpoint=endpoint, credential=AzureKeyCredential(key)
     )
@@ -43,24 +76,53 @@ def analyze_layout():
     poller = document_intelligence_client.begin_analyze_document(
         "prebuilt-layout", 
         AnalyzeDocumentRequest(bytes_source=base64_encoded_pdf),
-        pages="1-2"
+        output_content_format="markdown",
+        pages="1"
     )
 
     result: AnalyzeResult = poller.result()
     print(result.__class__.__name__)
+    duration = time.time() - start_time
+    print(f"api call duration: {duration}s")
     #
-    # with open('layout_result.json', 'w') as f:
-    #     json.dump(result, f)
-
-
     if result.styles and any([style.is_handwritten for style in result.styles]):
         print("Document contains handwritten content")
     else:
         print("Document does not contain handwritten content")
+    #
+    with open("api-response.json", "w") as f:
+        f.write(json.dumps(result.as_dict()))
+    # index paragraphs
+    paragraphs = {}
+    for idx, paragraph in enumerate(result.paragraphs):
+        paragraphs[f"/paragraphs/{idx}"] = paragraph
+    #
+    pdfPage = PDFPage()
+    #
+    sectionIdx = {}
+    for idx, section in enumerate(result.sections):
+        key = f"/sections/{idx}"
+        #
+        pdfSection = sectionIdx.get(key)
+        if pdfSection is None:
+            pdfSection = PDFPageSection(path=key)
+            pdfPage.sections.append(pdfSection)
+            sectionIdx[key] = pdfSection
+        #
+        for element in section.elements:
+            print(f"{idx}, {element}")
+            if element.startswith("/sections/"):
+                sub = PDFPageSection(path=element)
+                pdfSection.subSections.append(sub)
+                sectionIdx[element] = sub
+            elif element.startswith("/paragraphs/"):
+                parse_paragraph(pdfSection, paragraphs[element])
 
-    for section in result.sections:
-        print("-- Analyzing layout from section {}".format(section.title))
+    # dump pdfPage to a json file
+    with open("layout-analysis.json", "w") as f:
+        f.write(pdfPage.model_dump_json())
 
+    #
     for page in result.pages:
         print(f"----Analyzing layout from page #{page.page_number}----")
         print(
