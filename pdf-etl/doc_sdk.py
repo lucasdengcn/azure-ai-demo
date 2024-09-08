@@ -49,12 +49,26 @@ class PDFPage(BaseModel):
     sections: List[PDFPageSection] = []
 
 
-def parse_paragraph(section, paragraph) -> None:
+def parse_paragraph(section, paragraph) -> str:
     print(f"paragraph role: {paragraph.role}")
     if paragraph.role == "sectionHeading":
         section.heading = paragraph.content
+        return None
+    elif paragraph.role == "footnote":
+        return paragraph.role
+    elif paragraph.role == "pageFooter":
+        return paragraph.role
+    elif paragraph.role == "pageHeader":
+        return paragraph.role
+    elif paragraph.role == "pageNumber":
+        return None
     else:
         section.paragraphs.append(paragraph.content)
+        return None
+
+def parse_notes(section, paragraph) -> None:
+    section.paragraphs.append(paragraph.content)
+
 
 def analyze_layout():
     # sample document
@@ -69,14 +83,16 @@ def analyze_layout():
     #
     start_time = time.time()
     document_intelligence_client = DocumentIntelligenceClient(
-        endpoint=endpoint, credential=AzureKeyCredential(key)
+        endpoint=endpoint, 
+        credential=AzureKeyCredential(key),
+        params = {"api_version": "2024-07-31-preview"}
     )
 
     # prebuilt-document
     poller = document_intelligence_client.begin_analyze_document(
         "prebuilt-layout", 
         AnalyzeDocumentRequest(bytes_source=base64_encoded_pdf),
-        output_content_format="markdown",
+        output_content_format="text",
         pages="1"
     )
 
@@ -116,7 +132,28 @@ def analyze_layout():
                 pdfSection.subSections.append(sub)
                 sectionIdx[element] = sub
             elif element.startswith("/paragraphs/"):
-                parse_paragraph(pdfSection, paragraphs[element])
+                role = parse_paragraph(pdfSection, paragraphs[element])
+                if role == 'footnote':
+                    pdfSection = sectionIdx.get("footnote")
+                    if pdfSection is None:
+                        pdfSection = PDFPageSection(path='footnote')
+                        pdfPage.sections.append(pdfSection)
+                        sectionIdx["footnote"] = pdfSection
+                    parse_notes(pdfSection, paragraphs[element])
+                elif role == 'pageFooter':
+                    pdfSection = sectionIdx.get("pageFooter")
+                    if pdfSection is None:
+                        pdfSection = PDFPageSection(path='pageFooter')
+                        pdfPage.sections.append(pdfSection)
+                        sectionIdx["pageFooter"] = pdfSection
+                    parse_notes(pdfSection, paragraphs[element])
+                elif role == 'pageHeader':
+                    pdfSection = sectionIdx.get("pageHeader")
+                    if pdfSection is None:
+                        pdfSection = PDFPageSection(path='pageHeader')
+                        pdfPage.sections.append(pdfSection)
+                        sectionIdx["pageHeader"] = pdfSection
+                    parse_notes(pdfSection, paragraphs[element])
 
     # dump pdfPage to a json file
     with open("layout-analysis.json", "w") as f:
